@@ -1,0 +1,86 @@
+#include <Wire.h>
+#include <SPI.h>
+#include <SD.h>
+#include <DHT.h>
+#include <HardwareSerial.h>
+
+// --- Pin Definitions ---
+#define DHTPIN 4
+#define DHTTYPE DHT11
+#define SD_CS 5
+#define VIBRATION_THRESHOLD 1.0  // g-force threshold for leak detection
+
+// --- Objects ---
+DHT dht(DHTPIN, DHTTYPE);
+HardwareSerial gsm(1); // Use UART1 for SIM800L
+
+// --- MPU-6500 Registers ---
+const int MPU_addr = 0x68;
+float AccX, AccY, AccZ, vibration;
+
+// --- Setup ---
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  dht.begin();
+  gsm.begin(9600, SERIAL_8N1, 16, 17); // RX=16, TX=17 for SIM800L
+
+  // Initialize MPU-6500
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+
+  // Initialize SD card
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD Card initialization failed!");
+    return;
+  }
+  Serial.println("SD Card ready.");
+}
+
+// --- Main Loop ---
+void loop() {
+  // Read MPU-6500 accelerometer data
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_addr, 6, true);
+  AccX = (Wire.read() << 8 | Wire.read()) / 16384.0;
+  AccY = (Wire.read() << 8 | Wire.read()) / 16384.0;
+  AccZ = (Wire.read() << 8 | Wire.read()) / 16384.0;
+  vibration = sqrt(AccX * AccX + AccY * AccY + AccZ * AccZ);
+
+  // Read DHT11 data
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+
+  // Log data to SD card
+  File dataFile = SD.open("/leakdata.csv", FILE_APPEND);
+  if (dataFile) {
+    dataFile.printf("%02d:%02d,%.2f,%.2f,%.2f\n", hour(), minute(), vibration, temp, hum);
+    dataFile.close();
+  }
+
+  // Display readings
+  Serial.printf("Vibration: %.2f g | Temp: %.2f °C | Humidity: %.2f %%\n", vibration, temp, hum);
+
+  // Leak detection condition
+  if (vibration > VIBRATION_THRESHOLD) {
+    sendSMSAlert(vibration, temp, hum);
+  }
+
+  delay(5000);
+}
+
+// --- GSM Alert Function ---
+void sendSMSAlert(float vib, float temp, float hum) {
+  gsm.println("AT+CMGF=1");
+  delay(1000);
+  gsm.println("AT+CMGS=\"+91XXXXXXXXXX\""); // Replace with your phone number
+  delay(1000);
+  gsm.print("ALERT: Underground leak detected!\n");
+  gsm.printf("Vibration: %.2f g\nTemp: %.2f °C\nHumidity: %.2f %%\n", vib, temp, hum);
+  gsm.write(26); // Ctrl+Z to send
+  Serial.println("SMS Alert Sent!");
+}
